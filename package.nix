@@ -39,13 +39,16 @@
   wrapGAppsHook3,
 }:
 
+let
+  source = builtins.fromJSON (builtins.readFile ./vendor/antigravity-source.json);
+in
 stdenv.mkDerivation {
   pname = "antigravity";
-  version = "2.32.1";
+  version = source.version;
 
   src = fetchurl {
-    url = "https://storage.googleapis.com/antigravity-public/antigravity-hub/2.32.1-6001966350991360/linux-x64/Antigravity.tar.gz";
-    hash = "sha256-TLLU/qdKdPF8/iUYQbkAJJxa0nKLlh79v3Kdr65/6EI=";
+    inherit (source) url hash;
+    name = source.filename;
   };
 
   sourceRoot = "Antigravity-x64";

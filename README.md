@@ -21,22 +21,30 @@ nix profile install path:.#
 antigravity
 ```
 
+这里的 profile 元素名由 flake 目录名生成，因此是 `flake-antigravity`，
+不是命令名 `antigravity`。可用以下命令确认：
+
+```bash
+nix profile list
+```
+
 升级版本时：
 
 ```bash
-# 1. 替换 package.nix 中的 version 和下载 URL
-# 2. 为新文件生成哈希
-nix store prefetch-file --json "<新的 Antigravity.tar.gz 下载地址>"
-
-# 3. 把输出中的 hash 填入 package.nix 的 fetchurl.hash
-# 4. 重新构建并安装
-nix build path:.#
-nix profile install path:.#
+./scripts/update-antigravity.sh "<新的 Antigravity.tar.gz 下载地址>"
 ```
 
-每次换版本都需要重新生成一次哈希；日常构建不需要重复生成。
+脚本会完成下载、生成哈希、更新 `vendor/antigravity-source.json` 并构建。
+安装到当前用户后，升级时再执行：
 
-当前版本为 `2.32.1`，使用官方 `Antigravity.tar.gz` 作为源码输入。
+```bash
+nix profile upgrade flake-antigravity
+```
+
+当前版本、Build ID、下载地址和哈希统一记录在
+`vendor/antigravity-source.json`，不需要分别修改多个文件。
+
+脚本依赖 `nix` 和 `jq`。
 
 本项目把 Antigravity 官方 Linux x86_64 分发包封装为 Nix derivation，使其可以在 NixOS 上构建、安装和运行。
 
@@ -45,19 +53,17 @@ nix profile install path:.#
 - `package.nix`：应用打包定义，包括下载源、动态库、ELF 修正、桌面入口和启动 wrapper。
 - `flake.nix`：Flake 入口，提供 `packages.default` 和 `apps.default`。
 - `flake.lock`：锁定 nixpkgs 版本，由首次执行 Flake 命令时自动生成。
+- `vendor/antigravity-source.json`：当前 Antigravity 版本、Build ID、URL 和哈希。
+- `scripts/update-antigravity.sh`：一条命令完成版本升级、哈希生成和构建。
 
 原始应用目录中的二进制和资源不会再作为构建源使用。构建源固定为官方外部下载地址。
 
 ## 当前版本
 
-| 项目 | 值 |
-| --- | --- |
-| 应用版本 | `2.32.1` |
-| Build ID | `6001966350991360` |
-| Linux 源文件 | `Antigravity.tar.gz` |
-| 下载地址 | `https://storage.googleapis.com/antigravity-public/antigravity-hub/2.32.1-6001966350991360/linux-x64/Antigravity.tar.gz` |
-| SHA-256 | `sha256-TLLU/qdKdPF8/iUYQbkAJJxa0nKLlh79v3Kdr65/6EI=` |
-| 解压顶层目录 | `Antigravity-x64` |
+版本信息以 [`vendor/antigravity-source.json`](vendor/antigravity-source.json) 为准。
+`package.nix` 直接读取该文件，因此升级后不会出现版本号、URL 和哈希互相不一致的问题。
+
+当前解压顶层目录固定为 `Antigravity-x64`。
 
 ## 为什么需要哈希
 
@@ -73,51 +79,59 @@ Nix 使用固定输出（fixed-output derivation）下载外部文件。纯 Nix 
 
 ## 生成哈希
 
-每个新版本或新下载文件需要生成一次哈希：
+哈希由更新脚本自动生成，不需要手工复制。脚本内部执行的核心命令是：
 
 ```bash
 nix store prefetch-file --json \
-  "https://storage.googleapis.com/antigravity-public/antigravity-hub/2.32.1-6001966350991360/linux-x64/Antigravity.tar.gz"
+  --name Antigravity.tar.gz \
+  "https://storage.googleapis.com/antigravity-public/antigravity-hub/2.35.1-4615540875067392/linux-x64/Antigravity.tar.gz"
 ```
 
 输出示例：
 
 ```json
 {
-  "hash": "sha256-TLLU/qdKdPF8/iUYQbkAJJxa0nKLlh79v3Kdr65/6EI=",
-  "storePath": "/nix/store/ynbvbdinsbzsk56qj3ayb5id4qrld677-Antigravity.tar.gz"
+  "hash": "sha256-2SEDmob7+g0GloyXPq3/qDVytDSjUadxuK2fJBpJPX4=",
+  "storePath": "/nix/store/j7vaci1chfv92wvi94y91mdrnb7jb0fc-Antigravity.tar.gz"
 }
 ```
 
-将 `hash` 字段填入 `package.nix` 的 `fetchurl.hash`。
+`prefetch-file` 下载完成后，文件位于 `/nix/store`，不是执行结束后会被删除的临时目录。
+`fetchurl` 使用相同文件名和哈希时，会直接复用该 store 路径，因此安装阶段不会再次下载。
 
-该步骤不需要在每次构建时执行。相同文件只生成一次，后续 Nix 会复用 Nix store 中的缓存。
+该缓存可以被 `nix-collect-garbage` 清理。它被清理后，下次重新构建会再次下载；
+已经构建出的应用本身不受影响。
 
 ## 升级版本
 
-升级时需要同时更新以下三个值：
+后续升级只需要复制官方下载地址并执行：
 
-1. `package.nix` 中的 `version`；
-2. `package.nix` 中 `fetchurl.url` 的版本号和 Build ID；
-3. `package.nix` 中 `fetchurl.hash`。
-
-当前代码结构：
-
-```nix
-stdenv.mkDerivation {
-  pname = "antigravity";
-  version = "2.32.1";
-
-  src = fetchurl {
-    url = "https://storage.googleapis.com/antigravity-public/antigravity-hub/2.32.1-6001966350991360/linux-x64/Antigravity.tar.gz";
-    hash = "sha256-TLLU/qdKdPF8/iUYQbkAJJxa0nKLlh79v3Kdr65/6EI=";
-  };
-
-  sourceRoot = "Antigravity-x64";
-}
+```bash
+./scripts/update-antigravity.sh \
+  "https://storage.googleapis.com/antigravity-public/antigravity-hub/2.35.1-4615540875067392/linux-x64/Antigravity.tar.gz"
 ```
 
-如果新机或本地尚未缓存该文件，先执行 `nix store prefetch-file` 获得新哈希。不要继续沿用旧版本的哈希。
+以后版本只需替换其中的版本号和 Build ID：
+
+```text
+.../antigravity-hub/<版本>-<Build ID>/linux-x64/Antigravity.tar.gz
+```
+
+脚本会：
+
+1. 从 URL 中提取版本号和 Build ID；
+2. 用 `nix store prefetch-file` 下载到 `/nix/store` 并生成 SRI 哈希；
+3. 原子替换 `vendor/antigravity-source.json`；
+4. 执行 `nix build path:<仓库目录>`。
+
+只更新元数据、不立即构建：
+
+```bash
+ANTIGRAVITY_SKIP_BUILD=1 ./scripts/update-antigravity.sh "<下载地址>"
+```
+
+如果 URL 的格式不符合 `.../<版本>-<Build ID>/linux-x64/Antigravity.tar.gz`，
+脚本会直接报错，不会写入不完整的版本信息。
 
 ## 构建和运行
 
@@ -144,13 +158,30 @@ nix profile install path:.#
 antigravity
 ```
 
+安装后可以用 `nix profile list` 查看元素名。对当前仓库执行上述命令时，
+元素名为 `flake-antigravity`。
+
+如果以前从 `/home/zhf/Downloads/Antigravity/Antigravity-x64` 安装过，
+现有元素名通常是 `Antigravity-x64`。迁移到当前仓库需要移除旧元素并重新安装：
+
+```bash
+nix profile remove Antigravity-x64
+nix profile install path:/home/zhf/repo/flake-antigravity
+```
+
+之后升级使用：
+
+```bash
+nix profile upgrade flake-antigravity
+```
+
 安装到 NixOS 系统配置：
 
 ```nix
 nixpkgs.config.allowUnfree = true;
 
 environment.systemPackages = [
-  (pkgs.callPackage /home/zhf/Downloads/Antigravity/Antigravity-x64/package.nix { })
+  (pkgs.callPackage /home/zhf/repo/flake-antigravity/package.nix { })
 ];
 ```
 
@@ -179,7 +210,12 @@ sudo nixos-rebuild switch
 应用内的 electron-updater 不适用于 Nix store 中的只读安装。日志中的
 `APPIMAGE env is not defined` 属于预期现象。
 
-版本升级应由 Nix 包完成：更新 URL、生成新哈希、重新构建并重新安装。
+版本升级应由 Nix 包完成。执行一次更新脚本，然后升级 profile：
+
+```bash
+./scripts/update-antigravity.sh "<下载地址>"
+nix profile upgrade flake-antigravity
+```
 
 ## 排查
 
